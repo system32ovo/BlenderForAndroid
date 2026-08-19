@@ -77,7 +77,7 @@ jobs:
       - name: Install system build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y autoconf autoconf-archive automake libtool pkg-config \
+          sudo apt-get install -y autoconf autoconf-archive automake libtool libltdl-dev pkg-config \
             gperf nasm yasm bison flex gettext
 
       - name: vcpkg install host deps (${{ env.HOST_TRIPLET }})
