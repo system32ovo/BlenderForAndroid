@@ -19,8 +19,8 @@ env:
   BLENDER_COMMIT: be07d99aaed8df8a9b47d73b7726f721b94b74e3
   NDK_VERSION: r27c
   API_LEVEL: "26"
-  # Native deps for the host tools (depend on the runner arch).
-  HOST_TRIPLET: x86_64-linux
+  # Native deps for the host tools (vcpkg triplet; x64-linux on x86_64 hosts).
+  HOST_TRIPLET: x64-linux
 
 jobs:
   build:
