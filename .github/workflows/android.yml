@@ -40,8 +40,6 @@ jobs:
             python3 bison flex \
             libx11-dev libxcb1-dev libxrandr-dev \
             libegl1-mesa-dev libgles2-mesa-dev mesa-common-dev
-          echo "CC=/usr/bin/gcc-13" >> "$GITHUB_ENV"
-          echo "CXX=/usr/bin/g++-13" >> "$GITHUB_ENV"
 
       - name: Download Android NDK ${{ env.NDK_VERSION }}
         run: |
@@ -79,6 +77,9 @@ jobs:
             gperf nasm yasm bison flex gettext
 
       - name: vcpkg install host deps (${{ env.HOST_TRIPLET }})
+        env:
+          CC: /usr/bin/gcc-13
+          CXX: /usr/bin/g++-13
         run: |
           echo "VCPKG_DEFAULT_TRIPLET=${{ env.HOST_TRIPLET }}" >> "$GITHUB_ENV"
           /opt/vcpkg/vcpkg install \
@@ -102,6 +103,9 @@ jobs:
       # Step 1: build the host tools natively so they can run on this worker
       # ------------------------------------------------------------------
       - name: Configure host tools (native ${{ env.HOST_TRIPLET }})
+        env:
+          CC: /usr/bin/gcc-13
+          CXX: /usr/bin/g++-13
         run: |
           cmake -S blender -B build-host -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
