@@ -1,14 +1,13 @@
 name: Android Build
 
-# Native ARM64 build on a GitHub-hosted `ubuntu-24.04-arm` (paid larger runner).
-# Benefit vs. x86_64: the runner is itself AArch64, so the code-generation
-# host tools (`datatoc`, `makesdna`, `makesrna`, `shader_tool`) are compiled as
-# native ARM64-Linux executables and can run directly on the worker. Only the
-# actual Blender app binaries target ARM64-Android (cross-compiled with NDK).
+# NOTE: this MUST run on an x86_64 host. The Android NDK ships x86_64-only
+# Linux host binaries (clang/llvm). `ubuntu-24.04-arm` is ARM64, so the NDK
+# cannot execute there (cross-compiling to Android from an arm64 runner is not
+# supported). We therefore use the standard free `ubuntu-24.04` runner.
 #
-# Deploying `ubuntu-24.04-arm` requires enabling paid "larger runner" minutes
-# for this (public) repo: Settings -> Billing -> Paid minutes.
-# https://docs.github.com/en/actions/using-github-hosted-runners/using-github-hosted-runners
+# The code-generation host tools (`datatoc`, `makesdna`, `makesrna`,
+# `shader_tool`) are built natively as x86_64-Linux and run on the same worker;
+# only the Blender app is cross-compiled to ARM64-Android via the NDK.
 
 on:
   workflow_dispatch:
@@ -20,10 +19,12 @@ env:
   BLENDER_COMMIT: be07d99aaed8df8a9b47d73b7726f721b94b74e3
   NDK_VERSION: r27c
   API_LEVEL: "26"
+  # Native deps for the host tools (depend on the runner arch).
+  HOST_TRIPLET: x86_64-linux
 
 jobs:
   build:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
       - name: Checkout this repo (patch + port files)
@@ -68,13 +69,12 @@ jobs:
       - name: Bootstrap vcpkg
         run: /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
-      # Dependencies for the *native* host tools (ARM64-Linux).
-      - name: vcpkg install host deps (arm64-linux)
+      # Dependencies for the *native* host tools (x86_64-Linux).
+      - name: vcpkg install host deps (${{ env.HOST_TRIPLET }})
         run: |
-          mkdir -p /opt/vcpkg-hicet
-          echo "VCPKG_DEFAULT_TRIPLET=arm64-linux" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_TRIPLET=${{ env.HOST_TRIPLET }}" >> "$GITHUB_ENV"
           /opt/vcpkg/vcpkg install \
-            --triplet arm64-linux \
+            --triplet ${{ env.HOST_TRIPLET }} \
             sdl3 libepoxy fmt openexr openimageio opencolorio \
             eigen3 freetype brotli zlib zstd tiff
 
@@ -89,12 +89,12 @@ jobs:
       # ------------------------------------------------------------------
       # Step 1: build the host tools natively so they can run on this worker
       # ------------------------------------------------------------------
-      - name: Configure host tools (native arm64-linux)
+      - name: Configure host tools (native ${{ env.HOST_TRIPLET }})
         run: |
           cmake -S blender -B build-host -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="/opt/vcpkg/installed/arm64-linux" \
-            -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,/opt/vcpkg/installed/arm64-linux/lib" \
+            -DCMAKE_PREFIX_PATH="/opt/vcpkg/installed/${{ env.HOST_TRIPLET }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,/opt/vcpkg/installed/${{ env.HOST_TRIPLET }}/lib" \
             -DWITH_PYTHON=OFF -DWITH_INTERNATIONAL=OFF -DWITH_INPUT_NDOF=OFF \
             -DWITH_MOD_FLUID=OFF -DWITH_OPENVDB=OFF -DWITH_EMBREE=OFF \
             -DWITH_OPENCOLORIO=OFF -DWITH_OPENIMAGEDENOISE=OFF \
