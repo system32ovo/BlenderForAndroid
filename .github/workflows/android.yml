@@ -40,6 +40,7 @@ jobs:
             git ca-certificates unzip automake autoconf autoconf-archive libtool \
             python3 bison flex \
             libx11-dev libxcb1-dev libxrandr-dev \
+            libxi-dev libxcursor-dev libxxf86vm-dev libxfixes-dev \
             libegl1-mesa-dev libgles2-mesa-dev mesa-common-dev
 
       - name: Download Android NDK ${{ env.NDK_VERSION }}
