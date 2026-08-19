@@ -64,6 +64,10 @@ jobs:
           cp -v "$GITHUB_WORKSPACE"/port/GHOST_ContextSDL_EGL.cc \
                 "$GITHUB_WORKSPACE"/port/GHOST_ContextSDL_EGL.hh \
                 blender/intern/ghost/intern/
+          # Blender's build system invokes these scripts directly as commands
+          # (e.g. discover_nodes.py) during cross-compilation; ensure they are
+          # executable (the sparse clone may not carry the +x bit).
+          find blender/source -name "*.py" -exec chmod +x {} \;
 
       - name: Clone vcpkg
         run: git clone --depth=1 https://github.com/microsoft/vcpkg.git /opt/vcpkg
