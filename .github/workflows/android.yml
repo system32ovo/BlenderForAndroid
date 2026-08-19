@@ -131,8 +131,9 @@ jobs:
             -DWITH_HARU=OFF -DWITH_POTRACE=OFF \
             -DWITH_VULKAN_BACKEND=OFF
           ninja -C build-host datatoc makesdna makesrna shader_tool
-          mkdir -p build-host/bin
-          cp -v build-host/datatoc build-host/makesdna build-host/makesrna build-host/shader_tool build-host/bin/
+          # ninja places the tools under build-host/bin; BLENDER_HOST_TOOLS_DIR
+          # (set in "Configure Android build") points at this directory.
+          ls -la build-host/bin/
 
       # ------------------------------------------------------------------
       # Step 2: cross-compile Blender for ARM64 Android
