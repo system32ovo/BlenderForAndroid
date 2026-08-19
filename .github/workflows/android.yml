@@ -69,7 +69,13 @@ jobs:
       - name: Bootstrap vcpkg
         run: /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
-      # Dependencies for the *native* host tools (x86_64-Linux).
+      # Dependencies for the *native* host tools (x64-linux).
+      - name: Install system build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool pkg-config \
+            gperf nasm yasm bison flex gettext
+
       - name: vcpkg install host deps (${{ env.HOST_TRIPLET }})
         run: |
           echo "VCPKG_DEFAULT_TRIPLET=${{ env.HOST_TRIPLET }}" >> "$GITHUB_ENV"
