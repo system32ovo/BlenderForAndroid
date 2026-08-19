@@ -1,0 +1,454 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9fb7d0a0..7fe0b60a 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1541,8 +1541,11 @@ endif()
+ # - UNIX
+ # - WIN32
+ # - APPLE
++# - ANDROID
+ 
+-if(UNIX AND NOT APPLE)
++if(ANDROID)
++  include(platform_android)
++elseif(UNIX AND NOT APPLE)
+   include(platform_unix)
+ elseif(WIN32)
+   include(platform_win32)
+diff --git a/build_files/cmake/Modules/FindZstd.cmake b/build_files/cmake/Modules/FindZstd.cmake
+index 0da9da91..3d3ec6f0 100644
+--- a/build_files/cmake/Modules/FindZstd.cmake
++++ b/build_files/cmake/Modules/FindZstd.cmake
+@@ -15,6 +15,18 @@
+ # also defined, but not for general use are
+ #  ZSTD_LIBRARY, where to find the Zstd library.
+ 
++# On a case-insensitive filesystem (e.g. Windows) this module may also be
++# picked up by a third-party config package that calls `find_package(zstd)`
++# with a lowercase name (vcpkg's minizip-ng does this). Blender itself uses
++# `find_package(Zstd)`. Distinguish the two via CMAKE_FIND_PACKAGE_NAME and,
++# for the lowercase spelling, defer to the config package (zstdConfig.cmake)
++# so the `zstd::libzstd_static` imported target that the caller expects is
++# actually created.
++if(CMAKE_FIND_PACKAGE_NAME STREQUAL "zstd")
++  find_package(zstd CONFIG QUIET)
++  return()
++endif()
++
+ # If `ZSTD_ROOT_DIR` was defined in the environment, use it.
+ if(DEFINED ZSTD_ROOT_DIR)
+   # Pass.
+diff --git a/build_files/cmake/platform/dependency_targets.cmake b/build_files/cmake/platform/dependency_targets.cmake
+index 7713b05e..58fe6ce3 100644
+--- a/build_files/cmake/platform/dependency_targets.cmake
++++ b/build_files/cmake/platform/dependency_targets.cmake
+@@ -141,7 +141,13 @@ target_link_libraries(bf_deps_png INTERFACE ${PNG_LIBRARIES})
+ # Configure OpenImageIO
+ 
+ add_library(bf::dependencies::openimageio ALIAS OpenImageIO::OpenImageIO)
+-get_target_property(OPENIMAGEIO_TOOL OpenImageIO::oiiotool LOCATION)
++# `oiiotool` is only exported as an executable target by a full OpenImageIO
++# build. Packaged builds (e.g. vcpkg) may provide only the library target, in
++# which case OPENIMAGEIO_TOOL is left unset and the render tests disable
++# themselves.
++if(TARGET OpenImageIO::oiiotool)
++  get_target_property(OPENIMAGEIO_TOOL OpenImageIO::oiiotool LOCATION)
++endif()
+ 
+ # -----------------------------------------------------------------------------
+ # Configure USD
+diff --git a/build_files/cmake/platform/platform_win32.cmake b/build_files/cmake/platform/platform_win32.cmake
+index 2dffeb4b..358fba4f 100644
+--- a/build_files/cmake/platform/platform_win32.cmake
++++ b/build_files/cmake/platform/platform_win32.cmake
+@@ -6,6 +6,26 @@
+ 
+ add_definitions(-DWIN32)
+ 
++# Create a native tool target for the code-generation executables
++# (`makesdna`, `makesrna`, `datatoc`, `shader_tool`).
++# When BLENDER_HOST_TOOLS_DIR points to prebuilt tools this resolves to them
++# (matching the behavior in `platform_android.cmake`); otherwise the tools are
++# built natively as part of the host build.
++set(BLENDER_HOST_TOOLS_DIR "" CACHE STRING "Directory of natively built Blender host tools (datatoc, makesdna, makesrna, shader_tool).")
++macro(add_blender_host_tool _blender_tool_name)
++  if(BLENDER_HOST_TOOLS_DIR)
++    set(_blender_host_tool_path "${BLENDER_HOST_TOOLS_DIR}/${_blender_tool_name}.exe")
++    if(NOT EXISTS "${_blender_host_tool_path}")
++      message(FATAL_ERROR "Host tool not found: ${_blender_host_tool_path}")
++    endif()
++    add_executable(${_blender_tool_name} IMPORTED GLOBAL)
++    set_target_properties(${_blender_tool_name} PROPERTIES IMPORTED_LOCATION "${_blender_host_tool_path}")
++    message(STATUS "Using prebuilt host tool ${_blender_tool_name}: ${_blender_host_tool_path}")
++  else()
++    add_executable(${_blender_tool_name} ${ARGN})
++  endif()
++endmacro()
++
+ if(NOT MSVC)
+   message(FATAL_ERROR "Compiler is unsupported")
+ endif()
+diff --git a/intern/ghost/CMakeLists.txt b/intern/ghost/CMakeLists.txt
+index 06fc1409..3302bd07 100644
+--- a/intern/ghost/CMakeLists.txt
++++ b/intern/ghost/CMakeLists.txt
+@@ -149,6 +149,13 @@ elseif(WITH_GHOST_SDL)
+     intern/GHOST_SystemSDL.hh
+     intern/GHOST_WindowSDL.hh
+   )
++  if(ANDROID)
++    list(APPEND SRC
++      intern/GHOST_ContextSDL_EGL.cc
++
++      intern/GHOST_ContextSDL_EGL.hh
++    )
++  endif()
+   add_definitions(-DWITH_GHOST_SDL)
+ 
+   list(APPEND LIB
+diff --git a/intern/ghost/intern/GHOST_SystemSDL.cc b/intern/ghost/intern/GHOST_SystemSDL.cc
+index 72db0c22..ad6802ae 100644
+--- a/intern/ghost/intern/GHOST_SystemSDL.cc
++++ b/intern/ghost/intern/GHOST_SystemSDL.cc
+@@ -11,6 +11,9 @@
+ #include <stdexcept>
+ 
+ #include "GHOST_ContextSDL.hh"
++#ifdef __ANDROID__
++#  include "GHOST_ContextSDL_EGL.hh"
++#endif
+ #include "GHOST_SystemSDL.hh"
+ #include "GHOST_WindowSDL.hh"
+ 
+@@ -27,11 +30,13 @@ GHOST_SystemSDL::GHOST_SystemSDL() : GHOST_System()
+     throw std::runtime_error(SDL_GetError());
+   }
+ 
++#ifndef __ANDROID__
+   SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+   SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+   SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+   SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+   SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
++#endif
+ }
+ 
+ GHOST_SystemSDL::~GHOST_SystemSDL()
+@@ -140,6 +145,24 @@ GHOST_IContext *GHOST_SystemSDL::createOffscreenContext(GHOST_GPUSettings gpu_se
+   switch (gpu_settings.context_type) {
+ #ifdef WITH_OPENGL_BACKEND
+     case GHOST_kDrawingContextTypeOpenGL: {
++#ifdef __ANDROID__
++      for (int minor = 2; minor >= 0; --minor) {
++        GHOST_Context *context = new GHOST_ContextSDL_EGL(
++            this,
++            context_params_offscreen,
++            nullptr, /* Offscreen: 1x1 PBuffer surface. */
++            3,
++            minor,
++            GHOST_OPENGL_SDL_CONTEXT_FLAGS,
++            GHOST_OPENGL_SDL_RESET_NOTIFICATION_STRATEGY);
++
++        if (context->initializeDrawingContext()) {
++          return context;
++        }
++        delete context;
++      }
++      return nullptr;
++#else
+       for (int minor = 6; minor >= 3; --minor) {
+         GHOST_Context *context = new GHOST_ContextSDL(
+             context_params_offscreen,
+@@ -156,6 +179,7 @@ GHOST_IContext *GHOST_SystemSDL::createOffscreenContext(GHOST_GPUSettings gpu_se
+         delete context;
+       }
+       return nullptr;
++#endif
+     }
+ #endif
+ 
+diff --git a/intern/ghost/intern/GHOST_WindowSDL.cc b/intern/ghost/intern/GHOST_WindowSDL.cc
+index 6e51b294..dd063a78 100644
+--- a/intern/ghost/intern/GHOST_WindowSDL.cc
++++ b/intern/ghost/intern/GHOST_WindowSDL.cc
+@@ -10,6 +10,10 @@
+ 
+ #include "GHOST_ContextSDL.hh"
+ 
++#ifdef __ANDROID__
++#  include "GHOST_ContextSDL_EGL.hh"
++#endif
++
+ #include <cassert>
+ 
+ GHOST_WindowSDL::GHOST_WindowSDL(GHOST_SystemSDL *system,
+@@ -31,7 +35,12 @@ GHOST_WindowSDL::GHOST_WindowSDL(GHOST_SystemSDL *system,
+ {
+ 
+   /* creating the window _must_ come after setting attributes */
++#ifdef __ANDROID__
++  /* Android uses EGL, not SDL_GL. SDL_WINDOW_OPENGL is not needed. */
++  sdl_win_ = SDL_CreateWindow(title, width, height, SDL_WINDOW_RESIZABLE);
++#else
+   sdl_win_ = SDL_CreateWindow(title, width, height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL);
++#endif
+   if (sdl_win_) {
+     SDL_SetWindowPosition(sdl_win_, left, top);
+   }
+@@ -66,6 +75,26 @@ GHOST_Context *GHOST_WindowSDL::newDrawingContext(GHOST_TDrawingContextType type
+   switch (type) {
+ #ifdef WITH_OPENGL_BACKEND
+     case GHOST_kDrawingContextTypeOpenGL: {
++#ifdef __ANDROID__
++      /* Android only provides OpenGL ES via EGL (no desktop GL Core profile).
++       * Request GLES 3.2 down to 3.0. */
++      for (int minor = 2; minor >= 0; --minor) {
++        GHOST_Context *context = new GHOST_ContextSDL_EGL(
++            system_,
++            want_context_params_,
++            sdl_win_,
++            3,
++            minor,
++            GHOST_OPENGL_SDL_CONTEXT_FLAGS,
++            GHOST_OPENGL_SDL_RESET_NOTIFICATION_STRATEGY);
++
++        if (context->initializeDrawingContext()) {
++          return context;
++        }
++        delete context;
++      }
++      return nullptr;
++#else
+       for (int minor = 6; minor >= 3; --minor) {
+         GHOST_Context *context = new GHOST_ContextSDL(
+             want_context_params_,
+@@ -82,6 +111,7 @@ GHOST_Context *GHOST_WindowSDL::newDrawingContext(GHOST_TDrawingContextType type
+         delete context;
+       }
+       return nullptr;
++#endif
+     }
+ #endif
+ 
+diff --git a/source/blender/asset_system/intern/disk_file_hash_service.cc b/source/blender/asset_system/intern/disk_file_hash_service.cc
+index 3807c939..c2a0233b 100644
+--- a/source/blender/asset_system/intern/disk_file_hash_service.cc
++++ b/source/blender/asset_system/intern/disk_file_hash_service.cc
+@@ -100,7 +100,7 @@ _result = service.get_hash(Path(filepath), hash_algorithm)
+ 
+   return hash_value;
+ #else
+-  UNUSED_VARS(C, hash_algorithm);
++  UNUSED_VARS(hash_algorithm);
+   const std::string filepath_str = filepath;
+   CLOG_ERROR(&LOG,
+              "Blender was built without Python support, cannot compute hash for file [%s]",
+@@ -171,7 +171,7 @@ _result = service.file_matches(Path(filepath), hash_algorithm, hexhash, size_in_
+ 
+   return is_match;
+ #else
+-  UNUSED_VARS(C, hash_algorithm, hexhash, size_in_bytes);
++  UNUSED_VARS(hash_algorithm, hexhash, size_in_bytes);
+   const std::string filepath_str = filepath;
+   CLOG_ERROR(&LOG,
+              "Blender was built without Python support, cannot check hash for file [%s]",
+diff --git a/source/blender/blenlib/BLI_subprocess.hh b/source/blender/blenlib/BLI_subprocess.hh
+index 6c978f2a..0861cbbc 100644
+--- a/source/blender/blenlib/BLI_subprocess.hh
++++ b/source/blender/blenlib/BLI_subprocess.hh
+@@ -15,7 +15,7 @@
+  * Its use should always be inside `#if BLI_SUBPROCESS_SUPPORT` preprocessor directives.
+  */
+ 
+-#if defined(_WIN32) || defined(__linux__)
++#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
+ #  define BLI_SUBPROCESS_SUPPORT 1
+ #else
+ #  define BLI_SUBPROCESS_SUPPORT 0
+diff --git a/source/blender/blenlib/intern/BLI_mmap.cc b/source/blender/blenlib/intern/BLI_mmap.cc
+index 4710d8a2..bc216e72 100644
+--- a/source/blender/blenlib/intern/BLI_mmap.cc
++++ b/source/blender/blenlib/intern/BLI_mmap.cc
+@@ -333,7 +333,8 @@ static bool ensure_mmap_initialized()
+ 
+   std::unique_lock lock(mmap_mutex);
+   if (!initialized) {
+-    struct sigaction newact = {{nullptr}}, oldact = {{nullptr}};
++    struct sigaction newact = {};
++    struct sigaction oldact = {};
+ 
+     newact.sa_sigaction = sigbus_handler;
+     newact.sa_flags = SA_SIGINFO;
+diff --git a/source/blender/blenlib/intern/system.cc b/source/blender/blenlib/intern/system.cc
+index b2cc7148..014acdbf 100644
+--- a/source/blender/blenlib/intern/system.cc
++++ b/source/blender/blenlib/intern/system.cc
+@@ -74,7 +74,7 @@ void BLI_system_backtrace_with_os_info(FILE *fp, const void * /*os_info*/)
+ {
+   /* ----------------------- */
+   /* If system as execinfo.h */
+-#  if defined(HAVE_EXECINFO_H)
++#  if defined(HAVE_EXECINFO_H) && !defined(__ANDROID__)
+ 
+ #    define SIZE 100
+   void *buffer[SIZE];
+diff --git a/source/blender/blenlib/intern/uuid.cc b/source/blender/blenlib/intern/uuid.cc
+index 91b121f0..d2986e29 100644
+--- a/source/blender/blenlib/intern/uuid.cc
++++ b/source/blender/blenlib/intern/uuid.cc
+@@ -33,9 +33,9 @@ bUUID BLI_uuid_generate_random()
+     static_assert(std::mt19937_64::max() == 0xffffffffffffffffLL);
+ 
+     timespec ts;
+-#ifdef __APPLE__
+-    /* `timespec_get()` is only available on macOS 10.15+, so until that's the minimum version
+-     * supported by Blender, use another function to get the timespec.
++#if defined(__APPLE__) || defined(__ANDROID__)
++    /* `timespec_get()` is only available on macOS 10.15+ and is not provided by Android's
++     * Bionic C library, so use `clock_gettime()` on those platforms.
+      *
+      * `clock_gettime()` is only available on POSIX, so not on Windows; Linux uses the newer C++11
+      * function `timespec_get()` as well. */
+diff --git a/source/blender/datatoc/CMakeLists.txt b/source/blender/datatoc/CMakeLists.txt
+index 4e7017ae..a6e2d8cb 100644
+--- a/source/blender/datatoc/CMakeLists.txt
++++ b/source/blender/datatoc/CMakeLists.txt
+@@ -10,5 +10,7 @@ set(SRC
+ )
+ 
+ # `SRC_DNA_INC` is defined in the parent directory.
+-add_executable(datatoc ${SRC})
+-optimize_debug_target(datatoc)
++add_blender_host_tool(datatoc ${SRC})
++if(NOT BLENDER_HOST_TOOLS_DIR)
++  optimize_debug_target(datatoc)
++endif()
+diff --git a/source/blender/editors/sculpt_paint/mesh/sculpt_paint_image.cc b/source/blender/editors/sculpt_paint/mesh/sculpt_paint_image.cc
+index 903c1a18..37e4164a 100644
+--- a/source/blender/editors/sculpt_paint/mesh/sculpt_paint_image.cc
++++ b/source/blender/editors/sculpt_paint/mesh/sculpt_paint_image.cc
+@@ -419,17 +419,32 @@ static void push_undo_tiles(ImageData &image_data,
+ 
+   for (int tile_x = tile_x_start; tile_x <= tile_x_end; tile_x++) {
+     const int tile_index = tile_y * undo_tiles_x + tile_x;
++    const auto push_tile = [&]() {
++      ImageUser tile_user = *image_data.image_user;
++      tile_user.tile = tile_number;
++      PaintTileMap *undo_tiles = ED_image_paint_tile_map_get();
++      ED_image_paint_tile_push(
++          undo_tiles, image_data.image, &image_buffer, &tile_user, tile_x, tile_y, nullptr, nullptr);
++    };
++#if defined(__cpp_lib_atomic_ref)
+     std::atomic_ref<uint32_t> pushed(tile_pushed[tile_index]);
+     /* This atomic load is free on x86_64, and cheap on arm64. */
+     if (pushed.load(std::memory_order_acquire)) {
+       continue;
+     }
+-    ImageUser tile_user = *image_data.image_user;
+-    tile_user.tile = tile_number;
+-    PaintTileMap *undo_tiles = ED_image_paint_tile_map_get();
+-    ED_image_paint_tile_push(
+-        undo_tiles, image_data.image, &image_buffer, &tile_user, tile_x, tile_y, nullptr, nullptr);
++    push_tile();
+     pushed.store(1, std::memory_order_release);
++#else
++    /* Android's NDK libc++ does not provide `std::atomic_ref` (the
++     * `__cpp_lib_atomic_ref` feature macro is disabled). Use the compiler
++     * __atomic builtins for the same acquire/release semantics on the plain
++     * uint32 mask array. */
++    if (__atomic_load_n(&tile_pushed[tile_index], __ATOMIC_ACQUIRE)) {
++      continue;
++    }
++    push_tile();
++    __atomic_store_n(&tile_pushed[tile_index], 1, __ATOMIC_RELEASE);
++#endif
+   }
+ }
+ 
+diff --git a/source/blender/gpu/shader_tool/CMakeLists.txt b/source/blender/gpu/shader_tool/CMakeLists.txt
+index 2cf2801d..b7a3b835 100644
+--- a/source/blender/gpu/shader_tool/CMakeLists.txt
++++ b/source/blender/gpu/shader_tool/CMakeLists.txt
+@@ -48,8 +48,10 @@ if(WITH_GPU_SHADER_ASSERT)
+   add_definitions(-DWITH_GPU_SHADER_ASSERT)
+ endif()
+ 
+-add_executable(shader_tool shader_tool.cc ${SRC})
+-optimize_debug_target(shader_tool)
++add_blender_host_tool(shader_tool shader_tool.cc ${SRC})
++if(NOT BLENDER_HOST_TOOLS_DIR)
++  optimize_debug_target(shader_tool)
++endif()
+ 
+ if(WITH_GTESTS)
+   set(TEST_SRC
+diff --git a/source/blender/makesdna/intern/CMakeLists.txt b/source/blender/makesdna/intern/CMakeLists.txt
+index f3922fc2..a86f32d3 100644
+--- a/source/blender/makesdna/intern/CMakeLists.txt
++++ b/source/blender/makesdna/intern/CMakeLists.txt
+@@ -88,13 +88,15 @@ endif()
+ 
+ add_c_and_cxx_flags_custom_test(makesdna)
+ 
+-add_executable(makesdna ${SRC} ${SRC_DNA_INC})
+-setup_platform_linker_flags(makesdna)
+-setup_platform_linker_libs(makesdna)
+-blender_target_include_dirs(makesdna ${INC})
+-blender_target_include_dirs_sys(makesdna ${INC_SYS})
+-target_link_libraries(makesdna ${LIB})
+-target_link_libraries(makesdna PRIVATE bf::dependencies::pthreads)
++add_blender_host_tool(makesdna ${SRC} ${SRC_DNA_INC})
++if(NOT BLENDER_HOST_TOOLS_DIR)
++  setup_platform_linker_flags(makesdna)
++  setup_platform_linker_libs(makesdna)
++  blender_target_include_dirs(makesdna ${INC})
++  blender_target_include_dirs_sys(makesdna ${INC_SYS})
++  target_link_libraries(makesdna ${LIB})
++  target_link_libraries(makesdna PRIVATE bf::dependencies::pthreads)
++endif()
+ 
+ # Output dna.cc
+ add_custom_command(
+diff --git a/source/blender/makesrna/intern/CMakeLists.txt b/source/blender/makesrna/intern/CMakeLists.txt
+index 63ba1142..482cc4be 100644
+--- a/source/blender/makesrna/intern/CMakeLists.txt
++++ b/source/blender/makesrna/intern/CMakeLists.txt
+@@ -403,21 +403,23 @@ endif()
+ # Build `makesrna` executable.
+ add_c_and_cxx_flags_custom_test(makesrna)
+ 
+-add_executable(makesrna ${SRC} ${SRC_RNA_INC} ${SRC_DNA_INC})
+-setup_platform_linker_flags(makesrna)
+-setup_platform_linker_libs(makesrna)
+-blender_target_include_dirs(makesrna ${INC})
+-blender_target_include_dirs_sys(makesrna ${INC_SYS})
+-
+-target_link_libraries(makesrna PRIVATE bf_dna)
+-target_link_libraries(makesrna PRIVATE bf::intern::atomic)
+-target_link_libraries(makesrna PRIVATE bf::intern::guardedalloc)
+-target_link_libraries(makesrna PRIVATE bf_dna_blenlib)
+-target_link_libraries(makesrna PRIVATE bf_dna_defaults)
+-target_link_libraries(makesrna PRIVATE bf::dependencies::optional::openvdb)
+-target_link_libraries(makesrna PRIVATE bf::dependencies::optional::tbb)
+-target_link_libraries(makesrna PRIVATE bf::dependencies::pthreads)
+-target_link_libraries(makesrna PRIVATE bf::dependencies::fmt)
++add_blender_host_tool(makesrna ${SRC} ${SRC_RNA_INC} ${SRC_DNA_INC})
++if(NOT BLENDER_HOST_TOOLS_DIR)
++  setup_platform_linker_flags(makesrna)
++  setup_platform_linker_libs(makesrna)
++  blender_target_include_dirs(makesrna ${INC})
++  blender_target_include_dirs_sys(makesrna ${INC_SYS})
++
++  target_link_libraries(makesrna PRIVATE bf_dna)
++  target_link_libraries(makesrna PRIVATE bf::intern::atomic)
++  target_link_libraries(makesrna PRIVATE bf::intern::guardedalloc)
++  target_link_libraries(makesrna PRIVATE bf_dna_blenlib)
++  target_link_libraries(makesrna PRIVATE bf_dna_defaults)
++  target_link_libraries(makesrna PRIVATE bf::dependencies::optional::openvdb)
++  target_link_libraries(makesrna PRIVATE bf::dependencies::optional::tbb)
++  target_link_libraries(makesrna PRIVATE bf::dependencies::pthreads)
++  target_link_libraries(makesrna PRIVATE bf::dependencies::fmt)
++endif()
+ 
+ # Output `rna_*_gen.cc`.
+ # NOTE: (Linux only): with crashes try add this after COMMAND:

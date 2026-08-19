@@ -1,0 +1,135 @@
+name: Android Build
+
+# Native ARM64 build on a GitHub-hosted `ubuntu-24.04-arm` (paid larger runner).
+# Benefit vs. x86_64: the runner is itself AArch64, so the code-generation
+# host tools (`datatoc`, `makesdna`, `makesrna`, `shader_tool`) are compiled as
+# native ARM64-Linux executables and can run directly on the worker. Only the
+# actual Blender app binaries target ARM64-Android (cross-compiled with NDK).
+#
+# Deploying `ubuntu-24.04-arm` requires enabling paid "larger runner" minutes
+# for this (public) repo: Settings -> Billing -> Paid minutes.
+# https://docs.github.com/en/actions/using-github-hosted-runners/using-github-hosted-runners
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  # Blender upstream commit this port is based on.
+  BLENDER_COMMIT: be07d99aaed8df8a9b47d73b7726f721b94b74e3
+  NDK_VERSION: r27c
+  API_LEVEL: "26"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    steps:
+      - name: Checkout this repo (patch + port files)
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential g++-13 gcc-13 cmake ninja-build pkg-config \
+            git ca-certificates unzip automake autoconf libtool \
+            python3 bison flex libx11-dev libxcb1-dev libxrandr-dev \
+            libegl1-mesa-dev libgles2-mesa-dev mesa-common-dev
+          echo "CC=/usr/bin/gcc-13" >> "$GITHUB_ENV"
+          echo "CXX=/usr/bin/g++-13" >> "$GITHUB_ENV"
+
+      - name: Download Android NDK ${{ env.NDK_VERSION }}
+        run: |
+          curl -fL -o /tmp/ndk.zip \
+            "https://dl.google.com/android/repository/android-ndk-${{ env.NDK_VERSION }}-linux.zip"
+          unzip -q /tmp/ndk.zip -d /opt
+          echo "ANDROID_NDK_HOME=/opt/android-ndk-${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
+
+      - name: Fetch Blender source @ ${{ env.BLENDER_COMMIT }}
+        run: |
+          git clone --filter=blob:none --no-checkout \
+            https://projects.blender.org/blender/blender.git blender
+          git -C blender checkout ${{ env.BLENDER_COMMIT }}
+
+      - name: Apply Android port
+        run: |
+          git -C blender apply --whitespace=nowarn "$GITHUB_WORKSPACE/port/blender_android.patch"
+          cp -v "$GITHUB_WORKSPACE"/port/platform_android.cmake \
+                blender/build_files/cmake/platform/platform_android.cmake
+          cp -v "$GITHUB_WORKSPACE"/port/GHOST_ContextSDL_EGL.cc \
+                "$GITHUB_WORKSPACE"/port/GHOST_ContextSDL_EGL.hh \
+                blender/intern/ghost/intern/
+
+      - name: Clone vcpkg
+        run: git clone --depth=1 https://github.com/microsoft/vcpkg.git /opt/vcpkg
+
+      - name: Bootstrap vcpkg
+        run: /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      # Dependencies for the *native* host tools (ARM64-Linux).
+      - name: vcpkg install host deps (arm64-linux)
+        run: |
+          mkdir -p /opt/vcpkg-hicet
+          echo "VCPKG_DEFAULT_TRIPLET=arm64-linux" >> "$GITHUB_ENV"
+          /opt/vcpkg/vcpkg install \
+            --triplet arm64-linux \
+            sdl3 libepoxy fmt openexr openimageio opencolorio \
+            eigen3 freetype brotli zlib zstd tiff
+
+      # Dependencies for the *Android* app (cross-compiled).
+      - name: vcpkg install android deps (arm64-android)
+        run: |
+          /opt/vcpkg/vcpkg install \
+            --triplet arm64-android \
+            sdl3 libepoxy fmt openexr openimageio opencolorio \
+            eigen3 freetype brotli zlib zstd tiff
+
+      # ------------------------------------------------------------------
+      # Step 1: build the host tools natively so they can run on this worker
+      # ------------------------------------------------------------------
+      - name: Configure host tools (native arm64-linux)
+        run: |
+          cmake -S blender -B build-host -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="/opt/vcpkg/installed/arm64-linux" \
+            -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,/opt/vcpkg/installed/arm64-linux/lib" \
+            -DWITH_PYTHON=OFF -DWITH_INTERNATIONAL=OFF -DWITH_INPUT_NDOF=OFF \
+            -DWITH_MOD_FLUID=OFF -DWITH_OPENVDB=OFF -DWITH_EMBREE=OFF \
+            -DWITH_OPENCOLORIO=OFF -DWITH_OPENIMAGEDENOISE=OFF \
+            -DWITH_CYCLES=OFF -DWITH_FFMPEG=OFF -DWITH_AUDASPACE=OFF \
+            -DWITH_BULLET=OFF -DWITH_USD=OFF -DWITH_ALEMBIC=OFF \
+            -DWITH_BOOST=OFF -DWITH_TBB=OFF -DWITH_OPENAL=OFF \
+            -DWITH_HYDRA=OFF -DWITH_MATERIALX=OFF -DWITH_XR_OPENXR=OFF
+          ninja -C build-host datatoc makesdna makesrna shader_tool
+          mkdir -p build-host/bin
+          cp -v build-host/datatoc build-host/makesdna build-host/makesrna build-host/shader_tool build-host/bin/
+
+      # ------------------------------------------------------------------
+      # Step 2: cross-compile Blender for ARM64 Android
+      # ------------------------------------------------------------------
+      - name: Configure Android build
+        run: |
+          cmake -S blender -B build-android -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_ANDROID_NDK="$ANDROID_NDK_HOME" \
+            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
+            -DCMAKE_ANDROID_API=${{ env.API_LEVEL }} \
+            -DCMAKE_PREFIX_PATH="/opt/vcpkg/installed/arm64-android" \
+            -DBLENDER_HOST_TOOLS_DIR="$GITHUB_WORKSPACE/build-host/bin"
+        env:
+          ANDROID_NDK_HOME: /opt/android-ndk-${{ env.NDK_VERSION }}
+
+      - name: Build Android
+        run: ninja -C build-android blender
+
+      - name: Upload APK / binaries artifact
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: blender-arm64-android
+          path: |
+            build-android/bin/*
+            build-android/source/creator/*
