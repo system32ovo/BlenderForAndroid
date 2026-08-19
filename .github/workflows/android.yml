@@ -33,8 +33,9 @@ jobs:
 
       - name: Install toolchain
         run: |
+          echo "DEBIAN_FRONTEND=noninteractive" >> "$GITHUB_ENV"
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential g++-14 gcc-14 cmake ninja-build pkg-config \
             git ca-certificates unzip automake autoconf autoconf-archive libtool \
             python3 bison flex \
@@ -73,13 +74,13 @@ jobs:
       - name: Install system build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y autoconf autoconf-archive automake libtool libltdl-dev pkg-config \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y autoconf autoconf-archive automake libtool libltdl-dev pkg-config \
             gperf nasm yasm bison flex gettext
 
       - name: vcpkg install host deps (${{ env.HOST_TRIPLET }})
         env:
-          CC: /usr/bin/gcc-13
-          CXX: /usr/bin/g++-13
+          CC: /usr/bin/gcc-14
+          CXX: /usr/bin/g++-14
         run: |
           echo "VCPKG_DEFAULT_TRIPLET=${{ env.HOST_TRIPLET }}" >> "$GITHUB_ENV"
           /opt/vcpkg/vcpkg install \
