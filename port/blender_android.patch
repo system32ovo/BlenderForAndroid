@@ -57,6 +57,42 @@ index 7713b05e..58fe6ce3 100644
  
  # -----------------------------------------------------------------------------
  # Configure USD
+diff --git a/build_files/cmake/platform/platform_unix.cmake b/build_files/cmake/platform/platform_unix.cmake
+index fd935128..0e2b77bf 100644
+--- a/build_files/cmake/platform/platform_unix.cmake
++++ b/build_files/cmake/platform/platform_unix.cmake
+@@ -6,6 +6,31 @@
+ 
+ # Detect precompiled library directory
+ 
++# Create a native tool target for the code-generation executables
++# (`makesdna`, `makesrna`, `datatoc`, `shader_tool`).
++# When BLENDER_HOST_TOOLS_DIR points to prebuilt tools this resolves to them
++# (matching the behavior in `platform_android.cmake`); otherwise the tools are
++# built natively as part of the host build. On Linux the host tools are built
++# natively (no `.exe` suffix), so the IMPORTED fallback also accepts the bare name.
++set(BLENDER_HOST_TOOLS_DIR "" CACHE STRING "Directory of natively built Blender host tools (datatoc, makesdna, makesrna, shader_tool).")
++macro(add_blender_host_tool _blender_tool_name)
++  if(BLENDER_HOST_TOOLS_DIR)
++    set(_blender_host_tool_path "${BLENDER_HOST_TOOLS_DIR}/${_blender_tool_name}.exe")
++    if(NOT EXISTS "${_blender_host_tool_path}")
++      set(_blender_host_tool_path "${BLENDER_HOST_TOOLS_DIR}/${_blender_tool_name}")
++    endif()
++    if(NOT EXISTS "${_blender_host_tool_path}")
++      message(FATAL_ERROR "Host tool not found: ${_blender_host_tool_path}")
++    endif()
++    add_executable(${_blender_tool_name} IMPORTED GLOBAL)
++    set_target_properties(${_blender_tool_name} PROPERTIES IMPORTED_LOCATION "${_blender_host_tool_path}")
++    message(STATUS "Using prebuilt host tool ${_blender_tool_name}: ${_blender_host_tool_path}")
++  else()
++    add_executable(${_blender_tool_name} ${ARGN})
++  endif()
++endmacro()
++
++
+ if(NOT WITH_LIBS_PRECOMPILED)
+   unset(LIBDIR)
+ else()
 diff --git a/build_files/cmake/platform/platform_win32.cmake b/build_files/cmake/platform/platform_win32.cmake
 index 2dffeb4b..358fba4f 100644
 --- a/build_files/cmake/platform/platform_win32.cmake
